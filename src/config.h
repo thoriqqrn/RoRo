@@ -65,11 +65,16 @@ struct RobotData {
   float kecepatanKanan;
   float pitch;
   float roll;
+  float imuMotionScore;
   float teganganBaterai;
   bool wifiTerhubung;
   bool emergencyStop;
   bool tombolGasDitekan;
   bool tombolSosDitekan;
+  bool imuSensorReady;
+  bool imuBerjalan;
+  unsigned long imuStatusChangedMs;
+  unsigned long imuLastUpdateMs;
 };
 
 #endif // CONFIG_H

@@ -16,6 +16,16 @@ struct ToggleUpdateState {
   unsigned long lastAttemptMs = 0;
 };
 
+struct ImuUpdateState {
+  bool pending = false;
+  bool connected = false;
+  bool berjalan = false;
+  float pitch = 0.0f;
+  float roll = 0.0f;
+  float motionScore = 0.0f;
+  unsigned long lastAttemptMs = 0;
+};
+
 RobotData *robotData = nullptr;
 portMUX_TYPE firebaseMux = portMUX_INITIALIZER_UNLOCKED;
 
@@ -26,6 +36,7 @@ unsigned long tokenExpiresAtMs = 0;
 ToggleUpdateState pendingSos;
 ToggleUpdateState pendingGas;
 ToggleUpdateState pendingManual;
+ImuUpdateState pendingImu;
 int lastHttpCode = 0;
 char lastMessage[96] = "idle";
 
@@ -214,24 +225,19 @@ bool sendToggleUpdate(const char *fieldName, bool fieldValue) {
   JsonDocument body;
   JsonArray writes = body["writes"].to<JsonArray>();
 
+  // 1. Update status terkini di dokumen rollator utama
   JsonObject updateWrite = writes.add<JsonObject>();
   updateWrite["update"]["name"] = docPath;
   updateWrite["update"]["fields"][fieldName]["booleanValue"] = fieldValue;
   updateWrite["updateMask"]["fieldPaths"].add(fieldName);
 
+  // 2. Tambahkan dokumen log/history di subcollection untuk merekam waktu
   if (hasTimestamp) {
-    JsonObject transformWrite = writes.add<JsonObject>();
-    transformWrite["transform"]["document"] = docPath;
-    JsonArray fieldTransforms = transformWrite["transform"]["fieldTransforms"].to<JsonArray>();
-
-    JsonObject appendHistory = fieldTransforms.add<JsonObject>();
-    String historyFieldPath = String(fieldName) + "History";
-    appendHistory["fieldPath"] = historyFieldPath;
-
-    JsonObject historyItem = appendHistory["appendMissingElements"]["values"].add<JsonObject>();
-    JsonObject historyFields = historyItem["mapValue"]["fields"].to<JsonObject>();
-    historyFields[fieldName]["booleanValue"] = fieldValue;
-    historyFields["timestamp"]["timestampValue"] = timestamp;
+    String logDocPath = docPath + "/" + fieldName + "/" + String(millis());
+    JsonObject logWrite = writes.add<JsonObject>();
+    logWrite["update"]["name"] = logDocPath;
+    logWrite["update"]["fields"]["status"]["booleanValue"] = fieldValue;
+    logWrite["update"]["fields"]["timestamp"]["timestampValue"] = timestamp;
   }
 
   String payload;
@@ -264,6 +270,91 @@ bool sendToggleUpdate(const char *fieldName, bool fieldValue) {
 
   char message[48] = {0};
   snprintf(message, sizeof(message), "%s_%s_sent", fieldName, fieldValue ? "on" : "off");
+  setLastMessage(message);
+  return true;
+}
+
+bool sendImuUpdate(bool connected, bool berjalan, float pitch, float roll, float motionScore) {
+  if (!ensureToken()) {
+    return false;
+  }
+
+  char timestamp[25] = {0};
+  bool hasTimestamp = getUtcIsoTimestamp(timestamp, sizeof(timestamp));
+
+  String url = "https://firestore.googleapis.com/v1/projects/";
+  url += kFirebaseProjectId;
+  url += "/databases/(default)/documents:commit";
+
+  String docPath = "projects/";
+  docPath += kFirebaseProjectId;
+  docPath += "/databases/(default)/documents/rollators/";
+  docPath += kFirebaseRollatorId;
+
+  JsonDocument body;
+  JsonArray writes = body["writes"].to<JsonArray>();
+
+  JsonObject updateWrite = writes.add<JsonObject>();
+  updateWrite["update"]["name"] = docPath;
+  updateWrite["update"]["fields"]["imuConnected"]["booleanValue"] = connected;
+  updateWrite["update"]["fields"]["imuStatus"]["stringValue"] = berjalan ? "jalan" : "diam";
+  updateWrite["update"]["fields"]["imuBerjalan"]["booleanValue"] = berjalan;
+  updateWrite["update"]["fields"]["imuPitch"]["doubleValue"] = pitch;
+  updateWrite["update"]["fields"]["imuRoll"]["doubleValue"] = roll;
+  updateWrite["update"]["fields"]["imuMotionScore"]["doubleValue"] = motionScore;
+  updateWrite["update"]["fields"]["imuUpdatedAtMs"]["integerValue"] = static_cast<long long>(millis());
+  updateWrite["updateMask"]["fieldPaths"].add("imuStatus");
+  updateWrite["updateMask"]["fieldPaths"].add("imuConnected");
+  updateWrite["updateMask"]["fieldPaths"].add("imuBerjalan");
+  updateWrite["updateMask"]["fieldPaths"].add("imuPitch");
+  updateWrite["updateMask"]["fieldPaths"].add("imuRoll");
+  updateWrite["updateMask"]["fieldPaths"].add("imuMotionScore");
+  updateWrite["updateMask"]["fieldPaths"].add("imuUpdatedAtMs");
+
+  JsonObject logWrite = writes.add<JsonObject>();
+  String logDocPath = docPath + "/imuHistory/" + String(millis());
+  logWrite["update"]["name"] = logDocPath;
+  logWrite["update"]["fields"]["connected"]["booleanValue"] = connected;
+  logWrite["update"]["fields"]["status"]["stringValue"] = berjalan ? "jalan" : "diam";
+  logWrite["update"]["fields"]["walking"]["booleanValue"] = berjalan;
+  logWrite["update"]["fields"]["pitch"]["doubleValue"] = pitch;
+  logWrite["update"]["fields"]["roll"]["doubleValue"] = roll;
+  logWrite["update"]["fields"]["motionScore"]["doubleValue"] = motionScore;
+  logWrite["update"]["fields"]["deviceMillis"]["integerValue"] = static_cast<long long>(millis());
+  if (hasTimestamp) {
+    logWrite["update"]["fields"]["timestamp"]["timestampValue"] = timestamp;
+  }
+
+  String payload;
+  serializeJson(body, payload);
+
+  WiFiClientSecure client;
+  beginSecureRequest(client);
+
+  HTTPClient http;
+  if (!http.begin(client, url)) {
+    setLastMessage("imu_begin_failed");
+    return false;
+  }
+
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("Authorization", "Bearer " + idToken);
+  int code = http.POST(payload);
+  lastHttpCode = code;
+  String response = http.getString();
+  http.end();
+
+  if (code < 200 || code >= 300) {
+    Serial.print("[Firebase] IMU HTTP ");
+    Serial.print(code);
+    Serial.print(": ");
+    Serial.println(response);
+    setLastMessage("imu_post_failed");
+    return false;
+  }
+
+  char message[48] = {0};
+  snprintf(message, sizeof(message), "imu_%s_sent", berjalan ? "jalan" : "diam");
   setLastMessage(message);
   return true;
 }
@@ -305,6 +396,42 @@ bool processToggleUpdate(ToggleUpdateState &state, const char *fieldName, bool *
 
   return true;
 }
+
+bool processImuUpdate() {
+  if (!pendingImu.pending || !isWifiReady()) {
+    return false;
+  }
+
+  unsigned long now = millis();
+  if (pendingImu.lastAttemptMs != 0 && now - pendingImu.lastAttemptMs < RETRY_INTERVAL_MS) {
+    return false;
+  }
+  pendingImu.lastAttemptMs = now;
+
+  bool berjalan = false;
+  bool connected = false;
+  float pitch = 0.0f;
+  float roll = 0.0f;
+  float motionScore = 0.0f;
+
+  portENTER_CRITICAL(&firebaseMux);
+  connected = pendingImu.connected;
+  berjalan = pendingImu.berjalan;
+  pitch = pendingImu.pitch;
+  roll = pendingImu.roll;
+  motionScore = pendingImu.motionScore;
+  portEXIT_CRITICAL(&firebaseMux);
+
+  if (!sendImuUpdate(connected, berjalan, pitch, roll, motionScore)) {
+    return false;
+  }
+
+  portENTER_CRITICAL(&firebaseMux);
+  pendingImu.pending = false;
+  portEXIT_CRITICAL(&firebaseMux);
+
+  return true;
+}
 } // namespace
 
 void firebaseManagerInit(RobotData &data) {
@@ -319,6 +446,7 @@ void firebaseManagerLoop(RobotData &data) {
   processToggleUpdate(pendingSos, "sos", robotData ? &robotData->tombolSosDitekan : nullptr);
   processToggleUpdate(pendingGas, "gas", robotData ? &robotData->tombolGasDitekan : nullptr);
   processToggleUpdate(pendingManual, "manual", nullptr);
+  processImuUpdate();
 }
 
 void firebaseManagerQueueSosTriggered() {
@@ -351,6 +479,23 @@ void firebaseManagerQueueManualStopped() {
   setLastMessage("manual_off_queued");
 }
 
+void firebaseManagerQueueImuStatus(bool connected, bool berjalan, float pitch, float roll, float motionScore) {
+  portENTER_CRITICAL(&firebaseMux);
+  pendingImu.pending = true;
+  pendingImu.connected = connected;
+  pendingImu.berjalan = berjalan;
+  pendingImu.pitch = pitch;
+  pendingImu.roll = roll;
+  pendingImu.motionScore = motionScore;
+  portEXIT_CRITICAL(&firebaseMux);
+
+  if (!connected) {
+    setLastMessage("imu_offline_queued");
+  } else {
+    setLastMessage(berjalan ? "imu_jalan_queued" : "imu_diam_queued");
+  }
+}
+
 bool firebaseManagerIsConfigured() {
   return !isPlaceholderApiKey();
 }
@@ -369,6 +514,10 @@ bool firebaseManagerHasPendingGas() {
 
 bool firebaseManagerHasPendingManual() {
   return pendingManual.pending;
+}
+
+bool firebaseManagerHasPendingImu() {
+  return pendingImu.pending;
 }
 
 int firebaseManagerLastHttpCode() {

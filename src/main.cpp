@@ -1,6 +1,7 @@
 #include <Arduino.h>
 
 #include "config.h"
+#include "imu_manager.h"
 #include "firebase_manager.h"
 #include "motor.h"
 #include "safety.h"
@@ -14,6 +15,7 @@ void setup() {
 
   wifiManagerInit(robotData);
   firebaseManagerInit(robotData);
+  imuManagerInit(robotData);
   motorInit(robotData);
   safetyInit(robotData);
   webServerInit(robotData);

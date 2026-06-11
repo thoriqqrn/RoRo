@@ -11,10 +11,34 @@ namespace {
 WebServer server(80);
 RobotData *robotData = nullptr;
 
+void sendCorsHeaders() {
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  server.sendHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  server.sendHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, Origin, Accept, X-Requested-With");
+  server.sendHeader("Access-Control-Max-Age", "86400");
+}
+
 void sendJsonResponse(int code, const JsonDocument &doc) {
+  sendCorsHeaders();
   String payload;
   serializeJson(doc, payload);
   server.send(code, "application/json", payload);
+}
+
+void handleOptions() {
+  sendCorsHeaders();
+  server.send(204);
+}
+
+void appendImuFields(JsonDocument &doc) {
+  doc["imu_connected"] = robotData ? robotData->imuSensorReady : false;
+  doc["imu_status"] = robotData ? (robotData->imuBerjalan ? "jalan" : "diam") : "offline";
+  doc["imu_walking"] = robotData ? robotData->imuBerjalan : false;
+  doc["imu_pitch"] = robotData ? robotData->pitch : 0;
+  doc["imu_roll"] = robotData ? robotData->roll : 0;
+  doc["imu_motion_score"] = robotData ? robotData->imuMotionScore : 0;
+  doc["imu_status_changed_ms"] = robotData ? robotData->imuStatusChangedMs : 0;
+  doc["imu_last_update_ms"] = robotData ? robotData->imuLastUpdateMs : 0;
 }
 
 void handleStatus() {
@@ -34,10 +58,21 @@ void handleStatus() {
   doc["firebase_pending_sos"] = firebaseManagerHasPendingSos();
   doc["firebase_pending_gas"] = firebaseManagerHasPendingGas();
   doc["firebase_pending_manual"] = firebaseManagerHasPendingManual();
+  doc["firebase_pending_imu"] = firebaseManagerHasPendingImu();
   doc["firebase_last_http_code"] = firebaseManagerLastHttpCode();
   doc["firebase_uid"] = firebaseManagerUid();
   doc["firebase_last_message"] = firebaseManagerLastMessage();
+  appendImuFields(doc);
 
+  sendJsonResponse(200, doc);
+}
+
+void handleImuStatus() {
+  JsonDocument doc;
+  appendImuFields(doc);
+  doc["firebase_configured"] = firebaseManagerIsConfigured();
+  doc["firebase_pending_imu"] = firebaseManagerHasPendingImu();
+  doc["firebase_last_message"] = firebaseManagerLastMessage();
   sendJsonResponse(200, doc);
 }
 
@@ -168,6 +203,7 @@ void handleNotFound() {
   Serial.print("[Web] 404: ");
   Serial.println(server.uri());
 
+  sendCorsHeaders();
   JsonDocument doc;
   doc["ok"] = false;
   doc["message"] = "not_found";
@@ -179,10 +215,17 @@ void webServerInit(RobotData &data) {
   robotData = &data;
 
   server.on("/api/status", HTTP_GET, handleStatus);
+  server.on("/api/status", HTTP_OPTIONS, handleOptions);
+  server.on("/api/imu/status", HTTP_GET, handleImuStatus);
+  server.on("/api/imu/status", HTTP_OPTIONS, handleOptions);
   server.on("/api/wifi", HTTP_POST, handleWifiPost);
+  server.on("/api/wifi", HTTP_OPTIONS, handleOptions);
   server.on("/api/motor/test", HTTP_POST, handleMotorTestPost);
+  server.on("/api/motor/test", HTTP_OPTIONS, handleOptions);
   server.on("/api/sos/test", HTTP_POST, handleSosTestPost);
+  server.on("/api/sos/test", HTTP_OPTIONS, handleOptions);
   server.on("/api/provisioning/start", HTTP_POST, handleProvisioningStart);
+  server.on("/api/provisioning/start", HTTP_OPTIONS, handleOptions);
   server.onNotFound(handleNotFound);
 
   server.begin();

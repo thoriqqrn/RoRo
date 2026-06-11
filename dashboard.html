@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RoRo Dashboard</title>
+    <style>
+        :root {
+            --bg-color: #f4f7fb;
+            --text-color: #333;
+            --card-bg: #fff;
+            --primary-color: #007bff;
+            --primary-hover: #0056b3;
+            --danger-color: #dc3545;
+            --danger-hover: #c82333;
+            --success-color: #28a745;
+            --warning-color: #ffc107;
+            --border-color: #e1e5eb;
+            --font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: var(--font-family);
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            padding: 20px;
+        }
+
+        .header {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            background: var(--card-bg);
+            padding: 15px 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+
+        .header h1 {
+            font-size: 24px;
+            margin-right: 20px;
+        }
+
+        .config-bar {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .config-bar input {
+            padding: 8px;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            width: 250px;
+        }
+
+        .grid-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+        }
+
+        .card {
+            background: var(--card-bg);
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+
+        .card h2 {
+            font-size: 18px;
+            margin-bottom: 15px;
+            border-bottom: 2px solid var(--bg-color);
+            padding-bottom: 10px;
+        }
+
+        .data-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 10px;
+            padding-bottom: 5px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .data-row:last-child {
+            border-bottom: none;
+        }
+
+        .data-label {
+            font-weight: 600;
+            color: #555;
+        }
+
+        .data-value {
+            font-family: monospace;
+            font-size: 14px;
+        }
+
+        .badge {
+            padding: 3px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: bold;
+            color: #fff;
+        }
+
+        .badge.true, .badge.connected, .badge.jalan { background-color: var(--success-color); }
+        .badge.false, .badge.offline, .badge.diam { background-color: var(--danger-color); }
+        .badge.warning { background-color: var(--warning-color); color: #333; }
+
+        .btn {
+            padding: 8px 15px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+            color: #fff;
+            transition: background 0.3s;
+            margin-right: 5px;
+            margin-bottom: 5px;
+        }
+
+        .btn-primary { background-color: var(--primary-color); }
+        .btn-primary:hover { background-color: var(--primary-hover); }
+
+        .btn-danger { background-color: var(--danger-color); }
+        .btn-danger:hover { background-color: var(--danger-hover); }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 600;
+            font-size: 14px;
+        }
+
+        .form-group input {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+        }
+
+        #log-container {
+            margin-top: 20px;
+            background: #222;
+            color: #0f0;
+            padding: 10px;
+            border-radius: 8px;
+            height: 150px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 13px;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <h1>RoRo Realtime Dashboard</h1>
+        <div class="config-bar">
+            <label for="baseUrl">Device URL:</label>
+            <input type="text" id="baseUrl" value="http://rorro.local" placeholder="http://192.168.x.x atau rorro.local">
+            <button class="btn btn-primary" onclick="togglePolling()" id="btnPoll">Start Polling</button>
+        </div>
+    </div>
+
+    <div class="grid-container">
+        <!-- Status Card -->
+        <div class="card">
+            <h2>System Status</h2>
+            <div class="data-row"><span class="data-label">Mode</span><span class="data-value" id="val_mode">-</span></div>
+            <div class="data-row"><span class="data-label">Device ID</span><span class="data-value" id="val_device_id">-</span></div>
+            <div class="data-row"><span class="data-label">Uptime (ms)</span><span class="data-value" id="val_uptime_ms">-</span></div>
+            <div class="data-row"><span class="data-label">Wi-Fi Connected</span><span class="data-value" id="val_wifi_connected">-</span></div>
+            <div class="data-row"><span class="data-label">Emergency Stop</span><span class="data-value" id="val_emergency_stop">-</span></div>
+            <div class="data-row"><span class="data-label">Gas Pressed</span><span class="data-value" id="val_gas_pressed">-</span></div>
+            <div class="data-row"><span class="data-label">SOS Pressed</span><span class="data-value" id="val_sos_pressed">-</span></div>
+        </div>
+
+        <!-- Firebase & IMU Card -->
+        <div class="card">
+            <h2>Firebase & IMU</h2>
+            <div class="data-row"><span class="data-label">Firebase Configured</span><span class="data-value" id="val_firebase_configured">-</span></div>
+            <div class="data-row"><span class="data-label">IMU Connected</span><span class="data-value" id="val_imu_connected">-</span></div>
+            <div class="data-row"><span class="data-label">IMU Status</span><span class="data-value" id="val_imu_status">-</span></div>
+            <div class="data-row"><span class="data-label">IMU Walking</span><span class="data-value" id="val_imu_walking">-</span></div>
+            <div class="data-row"><span class="data-label">Pitch / Roll</span><span class="data-value"><span id="val_imu_pitch">0</span>° / <span id="val_imu_roll">0</span>°</span></div>
+            <div class="data-row"><span class="data-label">Motion Score</span><span class="data-value" id="val_imu_motion_score">-</span></div>
+        </div>
+
+        <!-- Controls Card -->
+        <div class="card">
+            <h2>Motor Test</h2>
+            <div class="data-row"><span class="data-label">Current Left Speed</span><span class="data-value" id="val_left_speed">0</span></div>
+            <div class="data-row"><span class="data-label">Current Right Speed</span><span class="data-value" id="val_right_speed">0</span></div>
+            
+            <div class="form-group" style="margin-top: 15px;">
+                <label>Left Speed (-255 to 255)</label>
+                <input type="number" id="testLeft" value="150">
+            </div>
+            <div class="form-group">
+                <label>Right Speed (-255 to 255)</label>
+                <input type="number" id="testRight" value="150">
+            </div>
+            <div class="form-group">
+                <label>Duration (ms)</label>
+                <input type="number" id="testDuration" value="1000">
+            </div>
+            <button class="btn btn-primary" onclick="testMotor()">Test Motor</button>
+        </div>
+
+        <!-- System & Network Control -->
+        <div class="card">
+            <h2>Network & Emergency</h2>
+            <div style="margin-bottom: 20px;">
+                <h3>SOS Test</h3>
+                <button class="btn btn-danger" onclick="testSos(false)">Trigger SOS</button>
+                <button class="btn btn-primary" onclick="testSos(true)">Clear SOS</button>
+            </div>
+
+            <div style="margin-bottom: 20px;">
+                <h3>Provisioning Mode</h3>
+                <button class="btn btn-warning" onclick="startProvisioning()" style="color:#000;">Start AP Provisioning</button>
+            </div>
+
+            <div>
+                <h3>Wi-Fi Setup</h3>
+                <div class="form-group">
+                    <input type="text" id="wifiSsid" placeholder="SSID">
+                </div>
+                <div class="form-group">
+                    <input type="password" id="wifiPass" placeholder="Password">
+                </div>
+                <button class="btn btn-primary" onclick="saveWifi()">Save & Restart</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="log-container">
+        <div>> System Ready...</div>
+    </div>
+
+    <script>
+        let pollingInterval = null;
+        let isPolling = false;
+
+        function logInfo(msg) {
+            const container = document.getElementById('log-container');
+            const time = new Date().toLocaleTimeString();
+            container.innerHTML += `<div>[${time}] ${msg}</div>`;
+            container.scrollTop = container.scrollHeight;
+        }
+
+        function getBaseUrl() {
+            let url = document.getElementById('baseUrl').value.trim();
+            if (url.endsWith('/')) url = url.slice(0, -1);
+            if (!url.startsWith('http')) url = 'http://' + url;
+            return url;
+        }
+
+        function updateBadge(id, value, customClasses = {}) {
+            const el = document.getElementById(id);
+            if (!el) return;
+            
+            let displayVal = value;
+            let className = 'badge ';
+
+            if (typeof value === 'boolean') {
+                className += value ? 'true' : 'false';
+            } else if (typeof value === 'string') {
+                className += (value.toLowerCase() === 'jalan' || value.toLowerCase() === 'connected') ? 'jalan' : 'offline';
+            } else {
+                className += 'true'; // Default for numbers/others
+            }
+
+            el.innerHTML = `<span class="${className}">${displayVal}</span>`;
+        }
+
+        function updateText(id, value) {
+            const el = document.getElementById(id);
+            if (el) el.innerText = value;
+        }
+
+        async function fetchStatus() {
+            if (!isPolling) return;
+            try {
+                const res = await fetch(`${getBaseUrl()}/api/status`);
+                if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+                const data = await res.json();
+                
+                updateText('val_mode', data.mode);
+                updateText('val_device_id', data.device_id);
+                updateText('val_uptime_ms', data.uptime_ms);
+                updateBadge('val_wifi_connected', data.wifi_connected);
+                updateBadge('val_emergency_stop', data.emergency_stop);
+                updateBadge('val_gas_pressed', data.gas_pressed);
+                updateBadge('val_sos_pressed', data.sos_pressed);
+                
+                updateText('val_left_speed', data.left_speed);
+                updateText('val_right_speed', data.right_speed);
+                
+                updateBadge('val_firebase_configured', data.firebase_configured);
+                updateBadge('val_imu_connected', data.imu_connected);
+                updateBadge('val_imu_status', data.imu_status);
+                updateBadge('val_imu_walking', data.imu_walking);
+                
+                updateText('val_imu_pitch', (data.imu_pitch || 0).toFixed(2));
+                updateText('val_imu_roll', (data.imu_roll || 0).toFixed(2));
+                updateText('val_imu_motion_score', (data.imu_motion_score || 0).toFixed(2));
+
+            } catch (e) {
+                logInfo(`Error fetching status: ${e.message}`);
+            }
+        }
+
+        function togglePolling() {
+            const btn = document.getElementById('btnPoll');
+            if (isPolling) {
+                clearInterval(pollingInterval);
+                isPolling = false;
+                btn.innerText = "Start Polling";
+                btn.classList.remove('btn-danger');
+                btn.classList.add('btn-primary');
+                logInfo("Polling stopped.");
+            } else {
+                isPolling = true;
+                btn.innerText = "Stop Polling";
+                btn.classList.remove('btn-primary');
+                btn.classList.add('btn-danger');
+                logInfo("Polling started.");
+                fetchStatus(); // fetch immediately
+                pollingInterval = setInterval(fetchStatus, 1000); // Poll every second
+            }
+        }
+
+        async function postJson(endpoint, payload) {
+            const url = `${getBaseUrl()}${endpoint}`;
+            logInfo(`POST ${url} - ${JSON.stringify(payload)}`);
+            try {
+                const res = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await res.json();
+                logInfo(`Response: ${JSON.stringify(data)}`);
+                return data;
+            } catch (e) {
+                logInfo(`Error: ${e.message}`);
+                alert(`Gagal: ${e.message}. Pastikan alat berada di jaringan yang sama dan mendukung CORS (atau buka HTML ini langsung dari server).`);
+            }
+        }
+
+        function testMotor() {
+            const left = parseInt(document.getElementById('testLeft').value);
+            const right = parseInt(document.getElementById('testRight').value);
+            const duration = parseInt(document.getElementById('testDuration').value);
+            postJson('/api/motor/test', { left, right, duration_ms: duration });
+        }
+
+        function testSos(clear) {
+            postJson('/api/sos/test', { clear: clear });
+        }
+
+        function startProvisioning() {
+            if(confirm("Apakah Anda yakin ingin masuk ke mode AP Provisioning? ESP32 akan restart dan menjadi Access Point.")) {
+                postJson('/api/provisioning/start', {});
+            }
+        }
+
+        function saveWifi() {
+            const ssid = document.getElementById('wifiSsid').value;
+            const pass = document.getElementById('wifiPass').value;
+            if(!ssid) {
+                alert("SSID tidak boleh kosong!");
+                return;
+            }
+            if(confirm(`Simpan kredensial Wi-Fi untuk "${ssid}"? ESP32 akan restart.`)) {
+                postJson('/api/wifi', { ssid: ssid, password: pass });
+            }
+        }
+
+        // Auto-start polling on load
+        togglePolling();
+    </script>
+</body>
+</html>

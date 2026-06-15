@@ -380,15 +380,15 @@ bool processToggleUpdate(ToggleUpdateState &state, const char *fieldName, bool *
   bool fieldValue = false;
   portENTER_CRITICAL(&firebaseMux);
   fieldValue = state.value;
+  state.pending = false;
   portEXIT_CRITICAL(&firebaseMux);
 
   if (!sendToggleUpdate(fieldName, fieldValue)) {
+    portENTER_CRITICAL(&firebaseMux);
+    state.pending = true;
+    portEXIT_CRITICAL(&firebaseMux);
     return false;
   }
-
-  portENTER_CRITICAL(&firebaseMux);
-  state.pending = false;
-  portEXIT_CRITICAL(&firebaseMux);
 
   if (syncValue != nullptr) {
     *syncValue = fieldValue;
@@ -420,15 +420,15 @@ bool processImuUpdate() {
   pitch = pendingImu.pitch;
   roll = pendingImu.roll;
   motionScore = pendingImu.motionScore;
+  pendingImu.pending = false;
   portEXIT_CRITICAL(&firebaseMux);
 
   if (!sendImuUpdate(connected, berjalan, pitch, roll, motionScore)) {
+    portENTER_CRITICAL(&firebaseMux);
+    pendingImu.pending = true;
+    portEXIT_CRITICAL(&firebaseMux);
     return false;
   }
-
-  portENTER_CRITICAL(&firebaseMux);
-  pendingImu.pending = false;
-  portEXIT_CRITICAL(&firebaseMux);
 
   return true;
 }

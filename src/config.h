@@ -36,6 +36,22 @@ constexpr uint8_t PIN_TOMBOL_SOS = 4;  // Tombol SOS aktif LOW
 constexpr uint8_t PIN_BUZZER = 5;      // Buzzer Low-Level Trigger
 constexpr uint8_t PIN_TOMBOL_GAS = 16; // Tombol untuk mengaktifkan motor (Aman, merupakan strapping pin untuk boot log)
 
+// 5. Pin Potensiometer Pengatur Kecepatan Motor
+// Potensiometer 5K: GND --- [pot] --- 3.3V, wiper ke GPIO 34
+// GPIO 34 = ADC1_CH6, input-only (tidak ada internal pull-up/down), JANGAN pakai 5V!
+constexpr uint8_t PIN_POTENSIOMETER = 34;
+
+// ==========================================
+// KONFIGURASI MOTOR (KECEPATAN)
+// ==========================================
+// Kecepatan motor dikontrol potensiometer (0-255 PWM 8-bit)
+// MIN_SPEED: kecepatan minimum agar motor tidak terlalu lambat / stall
+// MAX_SPEED: kecepatan maksimum, bisa diset < 255 untuk keamanan
+constexpr int MOTOR_MIN_SPEED = 0;    // 0 = motor berhenti penuh
+constexpr int MOTOR_MAX_SPEED = 250;  // ~98% duty cycle
+// Jumlah "level" kecepatan untuk trigger buzzer konfirmasi
+constexpr int MOTOR_SPEED_LEVELS = 9;
+
 // ==========================================
 // KONFIGURASI WIFI & WEBSERVER
 // ==========================================

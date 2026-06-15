@@ -2,6 +2,10 @@
 
 #include "firebase_manager.h"
 
+// Variabel global visible linker untuk komunikasi antar-modul (diakses safety.cpp via extern)
+volatile int gActiveMotorSpeed = MOTOR_MIN_SPEED;
+volatile bool gSpeedLevelChanged = false;
+
 namespace {
 RobotData *robotData = nullptr;
 portMUX_TYPE motorMux = portMUX_INITIALIZER_UNLOCKED;
@@ -16,7 +20,6 @@ const int CH_L_LPWM = 1;
 const int CH_R_RPWM = 2;
 const int CH_R_LPWM = 3;
 
-constexpr int MOTOR_SPEED_ACTIVE = 250;
 int manualLeftSpeed = 0;
 int manualRightSpeed = 0;
 unsigned long manualUntilMs = 0;
@@ -32,6 +35,46 @@ void enableMotorPin(int8_t pin) {
 
 int clampMotorSpeed(int speed) {
   return constrain(speed, -255, 255);
+}
+
+/**
+ * Membaca potensiometer dan memperbarui gActiveMotorSpeed.
+ * Menggunakan moving-average 4 sampel untuk mengurangi noise ADC.
+ * Dipanggil dari motorTask setiap iterasi loop.
+ * Jika level kecepatan berubah (dari 5 level diskrit), set gSpeedLevelChanged = true
+ * agar safetyTask bisa membunyikan buzzer konfirmasi.
+ */
+void updateSpeedFromPot() {
+  // Moving-average 4 sampel (cukup ringan)
+  static int samples[4] = {0, 0, 0, 0};
+  static uint8_t idx = 0;
+  samples[idx] = analogRead(PIN_POTENSIOMETER); // 12-bit: 0–4095
+  idx = (idx + 1) & 0x03;
+  int avg = (samples[0] + samples[1] + samples[2] + samples[3]) >> 2;
+
+  // Map ADC (0–4095) ke kecepatan (MOTOR_MIN_SPEED – MOTOR_MAX_SPEED)
+  int newSpeed = map(avg, 0, 4095, MOTOR_MIN_SPEED, MOTOR_MAX_SPEED);
+  newSpeed = constrain(newSpeed, MOTOR_MIN_SPEED, MOTOR_MAX_SPEED);
+
+  // Deteksi perubahan level (diskritisasi ke MOTOR_SPEED_LEVELS level)
+  // Ini mencegah buzzer berbunyi terus-terusan karena noise kecil
+  static int lastLevel = -1;
+  int speedRange = MOTOR_MAX_SPEED - MOTOR_MIN_SPEED;
+  int currentLevel = ((newSpeed - MOTOR_MIN_SPEED) * MOTOR_SPEED_LEVELS) / (speedRange + 1);
+  currentLevel = constrain(currentLevel, 0, MOTOR_SPEED_LEVELS - 1);
+
+  if (currentLevel != lastLevel) {
+    lastLevel = currentLevel;
+    gSpeedLevelChanged = true; // Beri sinyal ke safetyTask
+    Serial.print("[Motor] Kecepatan level ");
+    Serial.print(currentLevel + 1);
+    Serial.print("/");
+    Serial.print(MOTOR_SPEED_LEVELS);
+    Serial.print(" speed=");
+    Serial.println(newSpeed);
+  }
+
+  gActiveMotorSpeed = newSpeed;
 }
 
 void setMotorSpeed(int leftSpeed, int rightSpeed) {
@@ -77,6 +120,9 @@ void motorTask(void *pvParameters) {
     int activeLeftSpeed = 0;
     int activeRightSpeed = 0;
     bool manualActive = false;
+
+    // Perbarui kecepatan dari potensiometer setiap iterasi
+    updateSpeedFromPot();
 
     portENTER_CRITICAL(&motorMux);
     manualActive = manualUntilMs != 0 && static_cast<long>(millis() - manualUntilMs) < 0;
@@ -126,9 +172,10 @@ void motorTask(void *pvParameters) {
       data->kecepatanKanan = activeRightSpeed;
       setMotorSpeed(activeLeftSpeed, activeRightSpeed);
     } else if (data->tombolGasDitekan && !data->emergencyStop) {
-      data->kecepatanKiri = MOTOR_SPEED_ACTIVE; // 150 dari 255 (kecepatan sedang)
-      data->kecepatanKanan = MOTOR_SPEED_ACTIVE;
-      setMotorSpeed(MOTOR_SPEED_ACTIVE, MOTOR_SPEED_ACTIVE);
+      int spd = gActiveMotorSpeed; // Baca kecepatan dari potensiometer
+      data->kecepatanKiri = spd;
+      data->kecepatanKanan = spd;
+      setMotorSpeed(spd, spd);
     } else {
       data->kecepatanKiri = 0;
       data->kecepatanKanan = 0;
@@ -146,6 +193,11 @@ void motorInit(RobotData &data) {
 
   // Inisialisasi pin tombol gas dengan resistor pull-up internal
   pinMode(PIN_TOMBOL_GAS, INPUT_PULLUP);
+
+  // Inisialisasi pin ADC potensiometer (input-only, tidak perlu pinMode)
+  // GPIO 34 secara default adalah input; analogRead() langsung bisa dipakai.
+  // Resolusi ADC default ESP32 = 12-bit (0–4095)
+  analogSetAttenuation(ADC_11db); // Rentang input 0–3.3V penuh
 
   // BTS7960 perlu R_EN dan L_EN HIGH agar output aktif.
   // Jika pin enable sudah di-jumper ke 5V/3V3, biarkan konfigurasi di config.h bernilai -1.
@@ -173,6 +225,9 @@ void motorInit(RobotData &data) {
   xTaskCreatePinnedToCore(motorTask, "TaskMotor", 2048, &data, 2, NULL, 1);
   Serial.println("[Motor] Task diinisialisasi di Core 1");
   Serial.println("[Motor] Tombol gas aktif LOW: tekan harus terbaca LOW/GND");
+  Serial.print("[Motor] Potensiometer di GPIO ");
+  Serial.print(PIN_POTENSIOMETER);
+  Serial.println(" (ADC1_CH6). Rentang speed: MOTOR_MIN–MOTOR_MAX");
 }
 
 void motorRunManual(int leftSpeed, int rightSpeed, unsigned long durationMs) {

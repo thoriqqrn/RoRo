@@ -2,6 +2,9 @@
 
 #include "firebase_manager.h"
 
+// Flag dari motor.cpp — di-set saat level kecepatan potensiometer berubah
+extern volatile bool gSpeedLevelChanged;
+
 namespace {
 RobotData *robotData = nullptr;
 
@@ -9,6 +12,7 @@ constexpr unsigned long SOS_TIMEOUT_MS = 3000;
 constexpr unsigned long SOS_BEEP_INTERVAL_MS = 250;
 constexpr unsigned long GAS_BEEP_ON_MS = 70;
 constexpr unsigned long GAS_BEEP_INTERVAL_MS = 900;
+constexpr unsigned long SPEED_CONFIRM_BEEP_MS = 50; // Durasi buzzer konfirmasi kecepatan (klik pendek)
 
 void safetyTask(void *pvParameters) {
   RobotData *data = static_cast<RobotData *>(pvParameters);
@@ -21,6 +25,7 @@ void safetyTask(void *pvParameters) {
   bool lastGasPressed = false;
   unsigned long gasBeepOffMs = 0;
   unsigned long nextGasBeepMs = 0;
+  unsigned long speedBeepOffMs = 0; // Waktu selesai bunyi konfirmasi kecepatan
 
   for (;;) {
     unsigned long now = millis();
@@ -78,6 +83,20 @@ void safetyTask(void *pvParameters) {
       }
 
       lastGasPressed = gasPressed;
+    }
+
+    // 3. Buzzer konfirmasi saat level kecepatan potensiometer berubah
+    // Hanya aktif ketika tidak SOS dan tidak sedang gas-beep, agar tidak bentrok
+    if (!isSosActive && !gasBeepActive && gSpeedLevelChanged) {
+      gSpeedLevelChanged = false;          // Clear flag
+      speedBeepOffMs = now + SPEED_CONFIRM_BEEP_MS;
+      digitalWrite(PIN_BUZZER, LOW);       // Nyalakan buzzer (LOW = nyala)
+    }
+    // Matikan buzzer konfirmasi setelah durasi selesai
+    if (!isSosActive && !gasBeepActive &&
+        speedBeepOffMs != 0 && static_cast<long>(now - speedBeepOffMs) >= 0) {
+      speedBeepOffMs = 0;
+      digitalWrite(PIN_BUZZER, HIGH);      // Matikan buzzer
     }
 
     vTaskDelay(pdMS_TO_TICKS(20)); // Cek setiap 20ms

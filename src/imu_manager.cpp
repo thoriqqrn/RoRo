@@ -110,6 +110,7 @@ void imuTask(void *pvParameters) {
   bool walking = false;
   uint8_t aboveCount = 0;
   uint8_t belowCount = 0;
+  bool lastPublishedSensorReady = true;  // true supaya pertama kali disconnect langsung publish
 
   for (;;) {
     unsigned long now = millis();
@@ -124,13 +125,23 @@ void imuTask(void *pvParameters) {
       }
 
       if (!sensorReady) {
+        // Hanya publish SEKALI saat sensor disconnect, bukan tiap 500ms
+        if (lastPublishedSensorReady) {
+          publishImuState(false, false, 0.0f, 0.0f, 0.0f);
+          lastPublishedSensorReady = false;
+        }
         if (data) {
           data->imuLastUpdateMs = now;
         }
-        publishImuState(false, false, 0.0f, 0.0f, 0.0f);
         vTaskDelay(pdMS_TO_TICKS(500));
         continue;
       }
+    }
+
+    // Sensor baru connect kembali — publish sekali dengan state diam
+    if (!lastPublishedSensorReady) {
+      lastPublishedSensorReady = true;
+      publishImuState(true, false, filteredPitch, filteredRoll, 0.0f);
     }
 
     int16_t axRaw = 0;
@@ -147,10 +158,10 @@ void imuTask(void *pvParameters) {
         !readWord(REG_GYRO_XOUT_H + 2, gyRaw) ||
         !readWord(REG_GYRO_XOUT_H + 4, gzRaw)) {
       sensorReady = false;
+      lastPublishedSensorReady = true;  // reset agar publish disconnect sekali di iterasi berikutnya
       if (data) {
         data->imuSensorReady = false;
       }
-      publishImuState(false, false, 0.0f, 0.0f, 0.0f);
       vTaskDelay(pdMS_TO_TICKS(500));
       continue;
     }
@@ -187,25 +198,24 @@ void imuTask(void *pvParameters) {
 
     if (!walking && aboveCount >= STABLE_SAMPLES_REQUIRED) {
       walking = true;
+      aboveCount = 0;  // reset penuh
       belowCount = 0;
       publishImuState(true, walking, filteredPitch, filteredRoll, motionScore);
     } else if (walking && belowCount >= STABLE_SAMPLES_REQUIRED) {
       walking = false;
       aboveCount = 0;
+      belowCount = 0;  // reset penuh
       publishImuState(true, walking, filteredPitch, filteredRoll, motionScore);
     }
 
+    // Update robotData tiap sample (non-state-change data: pitch, roll, motionScore)
+    // State (walking, sensorReady) hanya update via publishImuState saat ada perubahan
     if (data) {
       portENTER_CRITICAL(&imuMux);
       data->pitch = filteredPitch;
       data->roll = filteredRoll;
       data->imuMotionScore = motionScore;
-      data->imuSensorReady = sensorReady;
-      data->imuBerjalan = walking;
       data->imuLastUpdateMs = now;
-      if (data->imuStatusChangedMs == 0) {
-        data->imuStatusChangedMs = now;
-      }
       portEXIT_CRITICAL(&imuMux);
     }
 

@@ -1,6 +1,7 @@
 #include "motor.h"
 
 #include "firebase_manager.h"
+#include "mqtt_manager.h"
 
 // Variabel global visible linker untuk komunikasi antar-modul (diakses safety.cpp via extern)
 volatile int gActiveMotorSpeed = MOTOR_MIN_SPEED;
@@ -116,6 +117,14 @@ void motorTask(void *pvParameters) {
   bool lastEmergencyStop = false;
   bool lastManualActive = false;
 
+  // State deteksi tekan tombol gas (debounce + hitung triple-tap untuk kunci gas)
+  int lastRawGas = HIGH;             // bacaan mentah terakhir (HIGH = lepas, pull-up)
+  int stableGas = HIGH;             // level stabil setelah debounce
+  unsigned long lastGasEdgeMs = 0;   // waktu bacaan mentah terakhir berubah
+  uint8_t gasTapCount = 0;           // jumlah tekan beruntun saat ini
+  unsigned long lastGasTapMs = 0;    // waktu tekan (press-edge) terakhir
+  bool gasLatched = false;           // true = gas terkunci (hold tanpa ditahan)
+
   for (;;) {
     int activeLeftSpeed = 0;
     int activeRightSpeed = 0;
@@ -134,13 +143,60 @@ void motorTask(void *pvParameters) {
     }
     portEXIT_CRITICAL(&motorMux);
 
-    // Membaca input tombol gas (Aktif LOW berkat INPUT_PULLUP)
-    data->tombolGasDitekan = (digitalRead(PIN_TOMBOL_GAS) == LOW);
+    // ── Input tombol gas: debounce + deteksi triple-tap untuk kunci gas ──
+    // Aktif LOW berkat INPUT_PULLUP (LOW = ditekan, HIGH = lepas).
+    unsigned long nowGas = millis();
+    int rawGas = digitalRead(PIN_TOMBOL_GAS);
+    if (rawGas != lastRawGas) {
+      lastRawGas = rawGas;
+      lastGasEdgeMs = nowGas;
+    }
+    // Terima level baru hanya jika sudah stabil melewati waktu debounce
+    if (stableGas != rawGas && (nowGas - lastGasEdgeMs) >= GAS_TAP_DEBOUNCE_MS) {
+      bool pressEdge = (stableGas == HIGH && rawGas == LOW); // transisi lepas→tekan
+      stableGas = rawGas;
 
-    if (data->tombolGasDitekan != lastGasPressed) {
-      lastGasPressed = data->tombolGasDitekan;
+      if (pressEdge) {
+        if (gasLatched) {
+          // Sudah terkunci: cukup tekan sekali lagi untuk melepas kunci
+          gasLatched = false;
+          gasTapCount = 0;
+          Serial.println("[Motor] Gas hold dilepas (tekan sekali)");
+        } else {
+          // Hitung tekan beruntun untuk mendeteksi triple-tap cepat
+          if (nowGas - lastGasTapMs <= GAS_TAP_MAX_INTERVAL_MS) {
+            ++gasTapCount;
+          } else {
+            gasTapCount = 1; // tekan pertama / mulai rangkaian baru
+          }
+          lastGasTapMs = nowGas;
+
+          if (gasTapCount >= GAS_TRIPLE_TAP_COUNT) {
+            gasLatched = true;
+            gasTapCount = 0;
+            Serial.println("[Motor] Gas dikunci (triple-tap) — motor jalan tanpa ditahan");
+          }
+        }
+      }
+    }
+
+    // Reset hitungan tap bila jeda antar tekan sudah kelewat lama
+    if (gasTapCount != 0 && (nowGas - lastGasTapMs) > GAS_TAP_MAX_INTERVAL_MS) {
+      gasTapCount = 0;
+    }
+
+    bool gasPhysical = (stableGas == LOW);
+    // Gas aktif efektif: ditekan fisik ATAU sedang terkunci (latch).
+    // Hold normal (tahan tombol) tetap lewat jalur gasPhysical, tidak berubah.
+    bool gasActive = gasPhysical || gasLatched;
+    data->gasTerkunci = gasLatched;
+    data->tombolGasDitekan = gasActive;
+
+    if (gasActive != lastGasPressed) {
+      lastGasPressed = gasActive;
       Serial.print("[Motor] Tombol gas: ");
       Serial.println(lastGasPressed ? "ditekan" : "lepas");
+      mqttManagerQueueGas(lastGasPressed); // push realtime via MQTT
       if (lastGasPressed) {
         firebaseManagerQueueGasPressed();
       } else {
@@ -152,6 +208,13 @@ void motorTask(void *pvParameters) {
       lastEmergencyStop = data->emergencyStop;
       Serial.print("[Motor] Emergency stop: ");
       Serial.println(lastEmergencyStop ? "aktif" : "nonaktif");
+      if (lastEmergencyStop && gasLatched) {
+        // Keselamatan: batalkan kunci gas saat emergency stop agar tidak
+        // melanjut sendiri ketika emergency dilepas.
+        gasLatched = false;
+        data->gasTerkunci = false;
+        Serial.println("[Motor] Gas hold dibatalkan oleh emergency stop");
+      }
     }
 
     bool manualJustStarted = manualActive && !lastManualActive;
@@ -190,6 +253,8 @@ void motorTask(void *pvParameters) {
 
 void motorInit(RobotData &data) {
   robotData = &data;
+
+  data.gasTerkunci = false;
 
   // Inisialisasi pin tombol gas dengan resistor pull-up internal
   pinMode(PIN_TOMBOL_GAS, INPUT_PULLUP);

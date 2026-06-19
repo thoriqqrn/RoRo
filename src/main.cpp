@@ -4,6 +4,7 @@
 #include "imu_manager.h"
 #include "firebase_manager.h"
 #include "motor.h"
+#include "mqtt_manager.h"
 #include "safety.h"
 #include "webserver.h"
 #include "wifi_manager.h"
@@ -15,6 +16,7 @@ void setup() {
 
   wifiManagerInit(robotData);
   firebaseManagerInit(robotData);
+  mqttManagerInit(robotData);
   imuManagerInit(robotData);
   motorInit(robotData);
   safetyInit(robotData);
@@ -24,5 +26,6 @@ void setup() {
 void loop() {
   wifiManagerLoop(robotData);
   firebaseManagerLoop(robotData);
+  mqttManagerLoop(robotData);
   webServerLoop();
 }

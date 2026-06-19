@@ -3,6 +3,7 @@
 #include <Wire.h>
 
 #include "firebase_manager.h"
+#include "mqtt_manager.h"
 
 namespace {
 RobotData *robotData = nullptr;
@@ -15,9 +16,10 @@ constexpr uint8_t REG_ACCEL_XOUT_H = 0x3B;
 constexpr uint8_t REG_GYRO_XOUT_H = 0x43;
 constexpr unsigned long SENSOR_RETRY_MS = 5000;
 constexpr unsigned long SAMPLE_INTERVAL_MS = 120;
-constexpr float WALKING_ON_THRESHOLD = 1.35f;
-constexpr float WALKING_OFF_THRESHOLD = 0.90f;
-constexpr uint8_t STABLE_SAMPLES_REQUIRED = 3;
+// Ambang & sampel-stabil sekarang dari config.h supaya gampang di-tuning.
+constexpr float WALKING_ON_THRESHOLD = kImuWalkingOnThreshold;
+constexpr float WALKING_OFF_THRESHOLD = kImuWalkingOffThreshold;
+constexpr uint8_t STABLE_SAMPLES_REQUIRED = kImuStableSamplesRequired;
 
 bool sensorReady = false;
 unsigned long lastSensorAttemptMs = 0;
@@ -96,6 +98,7 @@ void publishImuState(bool connected, bool walking, float pitch, float roll, floa
   static bool lastQueuedConnected = false;
   static bool firstPublish = true;
   if (firstPublish || stateChanged || lastQueuedWalking != walking || lastQueuedConnected != connected) {
+    mqttManagerQueueImu(connected, walking, pitch, roll, motionScore); // push realtime via MQTT
     firebaseManagerQueueImuStatus(connected, walking, pitch, roll, motionScore);
     lastQueuedWalking = walking;
     lastQueuedConnected = connected;
@@ -107,10 +110,14 @@ void imuTask(void *pvParameters) {
   RobotData *data = static_cast<RobotData *>(pvParameters);
   float filteredPitch = 0.0f;
   float filteredRoll = 0.0f;
+  float filteredMotion = 0.0f;  // motionScore yang sudah dihaluskan (EMA)
   bool walking = false;
   uint8_t aboveCount = 0;
   uint8_t belowCount = 0;
   bool lastPublishedSensorReady = true;  // true supaya pertama kali disconnect langsung publish
+  bool bootPublished = false;            // pastikan publish status nyata sekali saat boot
+  unsigned long lastHeartbeatMs = 0;     // timer kirim ulang status ke MQTT
+  unsigned long lastDebugMs = 0;         // timer stream debug metrik
 
   for (;;) {
     unsigned long now = millis();
@@ -142,6 +149,13 @@ void imuTask(void *pvParameters) {
     if (!lastPublishedSensorReady) {
       lastPublishedSensorReady = true;
       publishImuState(true, false, filteredPitch, filteredRoll, 0.0f);
+    }
+
+    // Saat boot: paksa publish status nyata sekali (diam) agar pesan retained "jalan"
+    // yang basi di broker langsung tertimpa, tanpa menunggu transisi gerakan.
+    if (!bootPublished) {
+      bootPublished = true;
+      publishImuState(true, walking, filteredPitch, filteredRoll, 0.0f);
     }
 
     int16_t axRaw = 0;
@@ -184,12 +198,16 @@ void imuTask(void *pvParameters) {
     float gyroMagnitude = fabsf(gx) + fabsf(gy) + fabsf(gz);
     float motionScore = (accelDelta * 3.5f) + (gyroMagnitude / 45.0f);
 
-    if (motionScore >= WALKING_ON_THRESHOLD) {
+    // Haluskan skor (EMA). Dorongan rollator berirama (skor naik-turun), tanpa
+    // dihaluskan status akan kedip jalan/diam. Setelah halus: diam~0.11, dorong~0.65.
+    filteredMotion = filteredMotion * (1.0f - kImuMotionSmoothing) + motionScore * kImuMotionSmoothing;
+
+    if (filteredMotion >= WALKING_ON_THRESHOLD) {
       if (aboveCount < 255) {
         ++aboveCount;
       }
       belowCount = 0;
-    } else if (motionScore <= WALKING_OFF_THRESHOLD) {
+    } else if (filteredMotion <= WALKING_OFF_THRESHOLD) {
       if (belowCount < 255) {
         ++belowCount;
       }
@@ -200,12 +218,12 @@ void imuTask(void *pvParameters) {
       walking = true;
       aboveCount = 0;  // reset penuh
       belowCount = 0;
-      publishImuState(true, walking, filteredPitch, filteredRoll, motionScore);
+      publishImuState(true, walking, filteredPitch, filteredRoll, filteredMotion);
     } else if (walking && belowCount >= STABLE_SAMPLES_REQUIRED) {
       walking = false;
       aboveCount = 0;
       belowCount = 0;  // reset penuh
-      publishImuState(true, walking, filteredPitch, filteredRoll, motionScore);
+      publishImuState(true, walking, filteredPitch, filteredRoll, filteredMotion);
     }
 
     // Update robotData tiap sample (non-state-change data: pitch, roll, motionScore)
@@ -214,9 +232,23 @@ void imuTask(void *pvParameters) {
       portENTER_CRITICAL(&imuMux);
       data->pitch = filteredPitch;
       data->roll = filteredRoll;
-      data->imuMotionScore = motionScore;
+      data->imuMotionScore = filteredMotion;
       data->imuLastUpdateMs = now;
       portEXIT_CRITICAL(&imuMux);
+    }
+
+    // Stream debug untuk tuning: accelDelta & gyro mentah, tapi skor = nilai HALUS
+    // (yang dipakai ambang) supaya kelihatan persis apa yang menggerakkan keputusan.
+    if (now - lastDebugMs >= kImuDebugIntervalMs) {
+      lastDebugMs = now;
+      mqttManagerQueueImuDebug(accelMagnitude, accelDelta, gyroMagnitude, filteredMotion, walking);
+    }
+
+    // Heartbeat MQTT: kirim ULANG status terkini berkala supaya tidak "nyangkut"
+    // walau satu pesan transisi (QoS0) hilang. Firebase TIDAK ikut (riwayat tetap saat berubah).
+    if (now - lastHeartbeatMs >= kImuMqttHeartbeatMs) {
+      lastHeartbeatMs = now;
+      mqttManagerQueueImu(true, walking, filteredPitch, filteredRoll, filteredMotion);
     }
 
     vTaskDelay(pdMS_TO_TICKS(SAMPLE_INTERVAL_MS));

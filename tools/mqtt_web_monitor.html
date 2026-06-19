@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RoRo MQTT Realtime Monitor</title>
+<!-- MQTT.js over WebSocket Secure (browser tidak bisa MQTT TCP biasa) -->
+<script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+<style>
+  :root{
+    --bg:#0f172a; --card:#1e293b; --muted:#64748b; --text:#e2e8f0;
+    --ok:#22c55e; --off:#475569; --warn:#f59e0b; --danger:#ef4444; --accent:#3b82f6;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);padding:16px;max-width:1100px;margin:0 auto}
+  h1{font-size:20px;margin-bottom:4px}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:16px}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:16px}
+  .field{display:flex;flex-direction:column;gap:4px}
+  .field label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  input{background:#0b1220;border:1px solid #334155;color:var(--text);padding:8px 10px;border-radius:8px;font-size:13px}
+  button{background:var(--accent);color:#fff;border:none;padding:10px 18px;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer}
+  button.secondary{background:#334155}
+  button:disabled{opacity:.4;cursor:not-allowed}
+  .pill{display:inline-block;padding:3px 10px;border-radius:999px;font-size:12px;font-weight:600}
+  .pill.on{background:rgba(34,197,94,.15);color:var(--ok)}
+  .pill.offl{background:rgba(71,85,105,.25);color:var(--muted)}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-bottom:16px}
+  .card{background:var(--card);border-radius:12px;padding:16px;border:1px solid #334155}
+  .card .name{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px}
+  .card .val{font-size:30px;font-weight:700;line-height:1}
+  .card .meta{font-size:12px;color:var(--muted);margin-top:10px;line-height:1.5}
+  .card.gas .val{color:var(--off)} .card.gas.active .val{color:var(--ok)}
+  .card.sos .val{color:var(--off)} .card.sos.active .val{color:var(--danger)}
+  .card.imu .val{color:var(--off)} .card.imu.walk .val{color:var(--ok)} .card.imu.idle .val{color:var(--warn)}
+  .stale{color:var(--danger)!important;font-weight:600}
+  .logwrap{background:var(--card);border-radius:12px;border:1px solid #334155;overflow:hidden}
+  .logwrap h2{font-size:13px;padding:12px 16px;border-bottom:1px solid #334155;display:flex;justify-content:space-between;align-items:center}
+  #log{font-family:'JetBrains Mono',monospace;font-size:12px;max-height:340px;overflow-y:auto;padding:8px 16px}
+  #log .line{padding:3px 0;border-bottom:1px solid #1e293b;white-space:pre-wrap;word-break:break-word}
+  #log .t{color:var(--muted)} #log .topic{color:var(--accent);font-weight:600}
+  #log .ret{color:var(--warn)} #log .sys{color:var(--muted);font-style:italic}
+  .legend{font-size:12px;color:var(--muted);margin-top:6px;line-height:1.6}
+  .legend b{color:var(--warn)}
+</style>
+</head>
+<body>
+  <h1>RoRo — MQTT Realtime Monitor (Web)</h1>
+  <div class="sub">Pembanding untuk mobile app. Konek ke HiveMQ via WebSocket Secure (port 8884). <span id="connState" class="pill offl">terputus</span></div>
+
+  <div class="row">
+    <div class="field"><label>Host</label><input id="host" size="40" value="746434cf770c4a868dc6863ed27b6d0a.s1.eu.hivemq.cloud"></div>
+    <div class="field"><label>Port (WSS)</label><input id="port" size="6" value="8884"></div>
+    <div class="field"><label>Username</label><input id="user" size="14" value="robotrollator"></div>
+    <div class="field"><label>Password</label><input id="pass" size="14" value="Roro12345" type="password"></div>
+    <div class="field"><label>Rollator ID</label><input id="rid" size="22" value="471grmOw38iBx5v5m9uC"></div>
+    <button id="btnConnect">Hubungkan</button>
+    <button id="btnDisconnect" class="secondary" disabled>Putus</button>
+  </div>
+
+  <div class="cards">
+    <div class="card gas" id="cardGas">
+      <div class="name">Gas</div>
+      <div class="val" id="valGas">—</div>
+      <div class="meta" id="metaGas">belum ada data</div>
+    </div>
+    <div class="card sos" id="cardSos">
+      <div class="name">SOS</div>
+      <div class="val" id="valSos">—</div>
+      <div class="meta" id="metaSos">belum ada data</div>
+    </div>
+    <div class="card imu" id="cardImu">
+      <div class="name">IMU</div>
+      <div class="val" id="valImu">—</div>
+      <div class="meta" id="metaImu">belum ada data</div>
+    </div>
+    <div class="card" id="cardDev">
+      <div class="name">Perangkat</div>
+      <div class="val" id="valDev" style="color:var(--off)">—</div>
+      <div class="meta" id="metaDev">status online/offline (Last Will)</div>
+    </div>
+  </div>
+
+  <div class="logwrap">
+    <h2><span>Log event mentah</span><button class="secondary" id="btnClear" style="padding:4px 12px;font-size:12px">Bersihkan</button></h2>
+    <div id="log"></div>
+  </div>
+  <div class="legend">
+    Tanda <b>[retained]</b> = pesan tersimpan di broker, dikirim sekali saat baru connect (BUKAN event baru).
+    Kartu IMU menampilkan <b>"diam sejak Ns"</b> — kalau di app kamu IMU "jalan" terus padahal di sini sudah "diam",
+    berarti bug di app (kemungkinan app menahan pesan retained lama atau tidak meng-update ke status "diam").
+  </div>
+
+<script>
+let client = null;
+const $ = id => document.getElementById(id);
+const lastSeen = { gas:0, sos:0, imu:0 };   // waktu update terakhir per topik (ms)
+let imuLastStatus = null, imuLastChangeTs = 0;
+let deviceOnline = true;                     // dari topik status (Last Will)
+
+function log(html, cls=''){
+  const el = $('log');
+  const div = document.createElement('div');
+  div.className = 'line ' + cls;
+  div.innerHTML = html;
+  el.prepend(div);
+  while(el.childElementCount > 300) el.removeChild(el.lastChild);
+}
+function hhmmss(d=new Date()){ return d.toTimeString().slice(0,8) + '.' + String(d.getMilliseconds()).padStart(3,'0'); }
+
+function setConn(state, txt){
+  const p = $('connState'); p.textContent = txt;
+  p.className = 'pill ' + (state ? 'on' : 'offl');
+}
+
+function connect(){
+  if(client){ try{ client.end(true); }catch(e){} }
+  const host=$('host').value.trim(), port=$('port').value.trim();
+  const url = `wss://${host}:${port}/mqtt`;
+  const rid = $('rid').value.trim();
+  const topic = `rollators/${rid}/#`;
+
+  setConn(false,'menghubungkan…');
+  log(`<span class="sys">menghubungkan ke ${url} …</span>`,'sys');
+
+  client = mqtt.connect(url, {
+    username:$('user').value, password:$('pass').value,
+    clean:true, reconnectPeriod:3000, connectTimeout:8000,
+    clientId:'roro-web-'+Math.random().toString(16).slice(2,10),
+  });
+
+  client.on('connect', ()=>{
+    setConn(true,'terhubung');
+    $('btnConnect').disabled=true; $('btnDisconnect').disabled=false;
+    log(`<span class="sys">terhubung. subscribe ${topic}</span>`,'sys');
+    client.subscribe(topic, {qos:0});
+  });
+  client.on('reconnect', ()=> setConn(false,'menyambung ulang…'));
+  client.on('error', e=> log(`<span class="sys">error: ${e.message}</span>`,'sys'));
+  client.on('close', ()=>{ setConn(false,'terputus'); $('btnConnect').disabled=false; $('btnDisconnect').disabled=true; });
+
+  client.on('message', (t, payloadBuf, packet)=>{
+    const now = Date.now();
+    let payload; try{ payload = JSON.parse(payloadBuf.toString()); }catch(e){ payload = payloadBuf.toString(); }
+    const key = t.split('/').pop();
+    const ret = packet.retain;
+    log(`<span class="t">${hhmmss()}</span>  <span class="topic">[${key}]</span>${ret?' <span class="ret">[retained]</span>':''}  ${JSON.stringify(payload)}`);
+    handle(key, payload, now, ret);
+  });
+}
+
+function handle(key, p, now, retained){
+  if(key==='gas'){
+    lastSeen.gas = now;
+    const on = !!p.gas;
+    $('valGas').textContent = on ? 'AKTIF' : 'nonaktif';
+    $('cardGas').classList.toggle('active', on);
+    $('metaGas').textContent = `update: ${hhmmss()}${retained?' (retained)':''}`;
+  }
+  else if(key==='sos'){
+    lastSeen.sos = now;
+    const on = !!p.sos;
+    $('valSos').textContent = on ? 'SOS!' : 'aman';
+    $('cardSos').classList.toggle('active', on);
+    $('metaSos').textContent = `update: ${hhmmss()}${retained?' (retained)':''}`;
+  }
+  else if(key==='imu'){
+    lastSeen.imu = now;
+    // device offline -> IMU dianggap offline walau payload retained bilang "jalan"
+    const conn = deviceOnline && p.connected !== false;
+    const status = !conn ? 'offline' : (p.walking ? 'jalan' : 'diam');
+    $('valImu').textContent = status;
+    const c = $('cardImu'); c.classList.remove('walk','idle');
+    if(status==='jalan') c.classList.add('walk'); else if(status==='diam') c.classList.add('idle');
+    if(status !== imuLastStatus){ imuLastStatus = status; imuLastChangeTs = now; }
+  }
+  else if(key==='status'){
+    const on = !!p.online;
+    deviceOnline = on;
+    $('valDev').textContent = on ? 'online' : 'OFFLINE';
+    $('valDev').style.color = on ? 'var(--ok)' : 'var(--danger)';
+    $('metaDev').textContent = `update: ${hhmmss()}${retained?' (retained / Last Will)':''}`;
+    if(!on){
+      // Perangkat mati (Last Will): JANGAN percaya status IMU retained yang basi.
+      const c=$('cardImu'); c.classList.remove('walk','idle');
+      $('valImu').textContent='offline';
+      imuLastStatus='offline'; imuLastChangeTs=now;
+      $('metaImu').innerHTML='perangkat OFFLINE — status IMU diabaikan (anti "jalan" basi)';
+    }
+  }
+}
+
+// Counter "sejak Ns" supaya ketahuan kalau data IMU macet / app menahan status lama
+setInterval(()=>{
+  if(imuLastStatus!==null){
+    const secs = ((Date.now()-imuLastChangeTs)/1000).toFixed(0);
+    const sinceUpd = lastSeen.imu ? ((Date.now()-lastSeen.imu)/1000) : null;
+    let warn = (sinceUpd!==null && sinceUpd>30) ? ' stale' : '';
+    $('metaImu').innerHTML = `status "<b>${imuLastStatus}</b>" sejak ${secs}s` +
+      (sinceUpd!==null ? ` · pesan terakhir <span class="${warn}">${sinceUpd.toFixed(0)}s lalu</span>` : '');
+  }
+}, 500);
+
+$('btnConnect').onclick = connect;
+$('btnDisconnect').onclick = ()=>{ if(client) client.end(true); };
+$('btnClear').onclick = ()=> $('log').innerHTML='';
+</script>
+</body>
+</html>

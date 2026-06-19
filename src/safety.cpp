@@ -1,6 +1,7 @@
 #include "safety.h"
 
 #include "firebase_manager.h"
+#include "mqtt_manager.h"
 
 // Flag dari motor.cpp — di-set saat level kecepatan potensiometer berubah
 extern volatile bool gSpeedLevelChanged;
@@ -38,6 +39,7 @@ void safetyTask(void *pvParameters) {
         isSosActive = true;
         gasBeepActive = false;
         data->tombolSosDitekan = true;
+        mqttManagerQueueSos(true); // push realtime via MQTT
         firebaseManagerQueueSosTriggered();
         Serial.println("[Safety] Tombol SOS Ditekan!");
       }
@@ -57,6 +59,7 @@ void safetyTask(void *pvParameters) {
         isSosActive = false;
         digitalWrite(PIN_BUZZER, HIGH); // Pastikan buzzer mati (HIGH)
         data->tombolSosDitekan = false;
+        mqttManagerQueueSos(false); // push realtime via MQTT
         firebaseManagerQueueSosCleared();
         Serial.println("[Safety] SOS Selesai (Timeout setelah dilepas)");
       }

@@ -5,6 +5,7 @@
 
 #include "firebase_manager.h"
 #include "motor.h"
+#include "mqtt_manager.h"
 #include "wifi_manager.h"
 
 namespace {
@@ -49,6 +50,7 @@ void handleStatus() {
   doc["wifi_connected"] = robotData ? robotData->wifiTerhubung : false;
   doc["emergency_stop"] = robotData ? robotData->emergencyStop : false;
   doc["gas_pressed"] = robotData ? robotData->tombolGasDitekan : false;
+  doc["gas_latched"] = robotData ? robotData->gasTerkunci : false;
   doc["sos_pressed"] = robotData ? robotData->tombolSosDitekan : false;
   doc["left_speed"] = robotData ? robotData->kecepatanKiri : 0;
   doc["right_speed"] = robotData ? robotData->kecepatanKanan : 0;
@@ -62,6 +64,9 @@ void handleStatus() {
   doc["firebase_last_http_code"] = firebaseManagerLastHttpCode();
   doc["firebase_uid"] = firebaseManagerUid();
   doc["firebase_last_message"] = firebaseManagerLastMessage();
+  doc["mqtt_enabled"] = mqttManagerIsEnabled();
+  doc["mqtt_connected"] = mqttManagerIsConnected();
+  doc["mqtt_last_message"] = mqttManagerLastMessage();
   appendImuFields(doc);
 
   sendJsonResponse(200, doc);
